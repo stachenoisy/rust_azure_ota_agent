@@ -21,7 +21,7 @@ A lightweight, asynchronous OTA (Over-The-Air) update daemon written in Rust for
 
 - **Compile-Time Config Ingestion**: File paths and system targets are baked directly into the binary at build time from a `.env` file.
 - **Azure IoT Hub Device Twin Sync**: Listens for desired property changes over native TLS/MQTT (`rumqttc`).
-- **Encrypted Bundle Support**: Automatically decrypts OpenSSL AES-256-CBC wrapped bundles before handoff.
+- **Encrypted Bundle Support**: Automatically decrypts OpenSSL AES-256-CBC wrapped bundles (PBKDF2, 100k iterations) before handoff.
 - **Atomic RAUC Triggering**: Invokes the `rauc` daemon safely and tracks full status lifecycle back to reported twin properties.
 - **Hardware ID Discovery**: Extracts persistent serial identifiers from `/proc/cpuinfo` or `/sys/block/mmcblk0`.
 - **Low Footprint**: Asynchronous runtime (`tokio`) optimized for embedded ARM targets.
