@@ -4,10 +4,10 @@
   <a href="https://github.com/stachenoisy/rust_azure_ota_agent">
     <img src="https://img.shields.io/github/stars/stachenoisy/rust_azure_ota_agent" alt="GitHub Repo stars">
   </a>
-  <a href="https://github.com/stachenoisy/rust_azure_ota_agent">
+  <a href="https://github.com/stachenoisy/rust_azure_ota_agent/commits/main">
     <img src="https://img.shields.io/github/last-commit/stachenoisy/rust_azure_ota_agent" alt="GitHub Last Commit">
   </a>
-  <a href="https://github.com/stachenoisy/rust_azure_ota_agent">
+  <a href="https://github.com/stachenoisy/rust_azure_ota_agent/commits/main">
     <img src="https://img.shields.io/github/commit-activity/t/stachenoisy/rust_azure_ota_agent" alt="GitHub Total Commit">
   </a>
   <a href="https://opensource.org/license/apache-2.0">
