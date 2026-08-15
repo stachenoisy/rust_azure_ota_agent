@@ -1,0 +1,26 @@
+[package]
+name = "azure-ota-agent"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+rumqttc = { version = "0.25.1", features = ["use-rustls"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "stream",
+] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+futures-util = "0.3"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+urlencoding = "2.1"
+chrono = "0.4"
+anyhow = "1.0"
+rustls = { version = "0.23", default-features = false, features = [
+  "ring",
+  "std",
+] }
+dotenvy_macro = "0.15"
