@@ -1,4 +1,4 @@
-# Azure RAUC OTA Agent
+<h1 align="center">Azure RAUC OTA Agent</h1>
 
 <p align="center">
   <a href="https://github.com/stachenoisy/rust_azure_ota_agent">
