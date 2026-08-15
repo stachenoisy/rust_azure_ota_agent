@@ -4,7 +4,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use chrono::Utc;
 use dotenvy_macro::dotenv;
 use futures_util::StreamExt;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use rumqttc::{AsyncClient, MqttOptions, QoS, Transport};
 use serde::Deserialize;
 use serde_json::{Value, json};
