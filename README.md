@@ -10,8 +10,8 @@
   <a href="https://github.com/stachenoisy/rust_azure_ota_agent/commits/main">
     <img src="https://img.shields.io/github/commit-activity/t/stachenoisy/rust_azure_ota_agent" alt="GitHub Total Commit">
   </a>
-  <a href="https://opensource.org/license/apache-2.0">
-    <img src="https://img.shields.io/github/license/stachenoisy/rust_azure_ota_agent" alt="License: Apache License 2.0">
+  <a href="https://opensource.org/license/gpl-3.0">
+    <img src="https://img.shields.io/github/license/stachenoisy/rust_azure_ota_agent" alt="License: GNU General Public License 3.0">
   </a>
 </p>
 
