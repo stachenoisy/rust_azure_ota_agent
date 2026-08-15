@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1.38", features = ["full"] }
+tokio = { version = "1.38", features = ["macros", "rt-multi-thread", "fs", "io-util", "sync", "time", "process"] }
 rumqttc = { version = "0.25.1", features = ["use-rustls"] }
 reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",

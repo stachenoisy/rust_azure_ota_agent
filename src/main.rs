@@ -10,13 +10,15 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::Sha256;
 use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 // Resolved and embedded into the binary at compile time via .env
@@ -60,7 +62,7 @@ fn get_cpu_serial() -> String {
     }
 
     // Fallback to eMMC serial if cpuinfo doesn't expose a valid serial
-    if let Ok(content) = fs::read_to_string("/sys/block/mmcblk0/device/serial") {
+    if let Ok(content) = std::fs::read_to_string("/sys/block/mmcblk0/device/serial") {
         let serial = content.trim();
         if !serial.is_empty() {
             return serial.to_string();
@@ -85,7 +87,7 @@ fn get_firmware_version() -> String {
 }
 
 fn parse_connection_string() -> Result<IotHubConfig> {
-    let raw = fs::read_to_string(CONF_FILE)
+    let raw = std::fs::read_to_string(CONF_FILE)
         .with_context(|| format!("Failed to read Azure config at {}", CONF_FILE))?;
     let conn_str = raw.trim();
     if conn_str.is_empty() {
@@ -137,21 +139,10 @@ fn generate_sas_token(config: &IotHubConfig, ttl_secs: i64) -> Result<String> {
     ))
 }
 
-fn run_cmd(cmd: &str) -> (bool, String, String) {
-    match Command::new("sh").arg("-c").arg(cmd).output() {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            (out.status.success(), stdout, stderr)
-        }
-        Err(e) => (false, String::new(), e.to_string()),
-    }
-}
-
-fn cleanup_temp_files() {
+async fn cleanup_temp_files() {
     for path in &[DOWNLOAD_PATH, DECRYPTED_PATH] {
         if Path::new(path).exists() {
-            match fs::remove_file(path) {
+            match fs::remove_file(path).await {
                 Ok(_) => println!("[clean] Removed temporary file: {}", path),
                 Err(e) => eprintln!("[warn] Failed to delete temporary file {}: {}", path, e),
             }
@@ -162,7 +153,7 @@ fn cleanup_temp_files() {
 async fn download_file(url: &str, target_path: &str) -> Result<()> {
     println!("[download] Fetching update bundle -> {}", target_path);
     if Path::new(target_path).exists() {
-        let _ = fs::remove_file(target_path);
+        let _ = fs::remove_file(target_path).await;
     }
 
     let client = reqwest::Client::builder()
@@ -174,15 +165,16 @@ async fn download_file(url: &str, target_path: &str) -> Result<()> {
         bail!("Download request failed: HTTP {}", response.status());
     }
 
-    let mut file = File::create(target_path)?;
+    let mut file = fs::File::create(target_path).await?;
     let mut stream = response.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
         let data = chunk?;
-        file.write_all(&data)?;
+        file.write_all(&data).await?;
     }
+    file.flush().await?;
 
-    let metadata = fs::metadata(target_path)?;
+    let metadata = fs::metadata(target_path).await?;
     if metadata.len() == 0 {
         bail!("Downloaded file is empty (0 bytes)");
     }
@@ -192,18 +184,34 @@ async fn download_file(url: &str, target_path: &str) -> Result<()> {
     Ok(())
 }
 
-fn decrypt_bundle_if_needed(src: &str, dst: &str) -> Result<String> {
-    if src.ends_with(".enc") || src.contains("encrypted") {
+fn decrypt_bundle_if_needed(url: &str, src: &str, dst: &str) -> Result<String> {
+    let is_encrypted =
+        url.ends_with(".enc") || url.contains(".encrypted.") || url.ends_with(".encrypted");
+
+    if is_encrypted {
         println!("[crypto] Encrypted bundle detected, decrypting via OpenSSL...");
         if !Path::new(CRYPT_KEY_FILE).exists() {
             bail!("Decryption key file not found: {}", CRYPT_KEY_FILE);
         }
 
-        let cmd = format!(
-            "openssl enc -d -aes-256-cbc -salt -pbkdf2 -iter 100000 -in '{}' -out '{}' -pass file:'{}'",
-            src, dst, CRYPT_KEY_FILE
-        );
-        let (ok, _, err) = run_cmd(&cmd);
+        let pass_arg = format!("file:{}", CRYPT_KEY_FILE);
+        let args = [
+            "enc",
+            "-d",
+            "-aes-256-cbc",
+            "-salt",
+            "-pbkdf2",
+            "-iter",
+            "100000",
+            "-in",
+            src,
+            "-out",
+            dst,
+            "-pass",
+            &pass_arg,
+        ];
+
+        let (ok, _, err) = run_command_direct("openssl", &args);
         if ok {
             println!("[crypto] Bundle decrypted successfully");
             return Ok(dst.to_string());
@@ -214,9 +222,20 @@ fn decrypt_bundle_if_needed(src: &str, dst: &str) -> Result<String> {
     Ok(src.to_string())
 }
 
+fn run_command_direct(program: &str, args: &[&str]) -> (bool, String, String) {
+    match Command::new(program).args(args).output() {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            (out.status.success(), stdout, stderr)
+        }
+        Err(e) => (false, String::new(), e.to_string()),
+    }
+}
+
 fn apply_rauc_update(file_path: &str) -> bool {
     println!("[rauc] Triggering bundle installation: {}", file_path);
-    let (ok, _, err) = run_cmd(&format!("rauc install {}", file_path));
+    let (ok, _, err) = run_command_direct("rauc", &["install", file_path]);
     if ok {
         println!("[rauc] Update installed successfully");
         true
@@ -256,12 +275,33 @@ async fn handle_twin_patch(patch_str: &str, client: &AsyncClient) {
         };
 
         if let Some(url) = payload.url {
-            let version = payload.version.unwrap_or_else(|| "unknown".to_string());
-            println!("[ota] Update trigger received (target: {})", version);
+            let target_version = payload.version.unwrap_or_else(|| "unknown".to_string());
+            let current_version = get_firmware_version();
+
+            if target_version != "unknown" && target_version == current_version {
+                println!(
+                    "[ota] Device already at desired version (v{}). Skipping update.",
+                    target_version
+                );
+                update_reported_status(
+                    client,
+                    json!({
+                        "ota_status": "idle",
+                        "installed_version": current_version
+                    }),
+                )
+                .await;
+                return;
+            }
+
+            println!(
+                "[ota] Update trigger received (current: {}, target: {})",
+                current_version, target_version
+            );
 
             update_reported_status(
                 client,
-                json!({ "ota_status": format!("downloading_v{}", version) }),
+                json!({ "ota_status": format!("downloading_v{}", target_version) }),
             )
             .await;
 
@@ -269,11 +309,11 @@ async fn handle_twin_patch(patch_str: &str, client: &AsyncClient) {
                 eprintln!("[error] Download failed: {}", e);
                 update_reported_status(client, json!({ "ota_status": format!("error: {}", e) }))
                     .await;
-                cleanup_temp_files();
+                cleanup_temp_files().await;
                 return;
             }
 
-            let target_raucb = match decrypt_bundle_if_needed(DOWNLOAD_PATH, DECRYPTED_PATH) {
+            let target_raucb = match decrypt_bundle_if_needed(&url, DOWNLOAD_PATH, DECRYPTED_PATH) {
                 Ok(path) => path,
                 Err(e) => {
                     eprintln!("[error] Decryption failed: {}", e);
@@ -282,14 +322,14 @@ async fn handle_twin_patch(patch_str: &str, client: &AsyncClient) {
                         json!({ "ota_status": format!("error: {}", e) }),
                     )
                     .await;
-                    cleanup_temp_files();
+                    cleanup_temp_files().await;
                     return;
                 }
             };
 
             update_reported_status(
                 client,
-                json!({ "ota_status": format!("installing_v{}", version) }),
+                json!({ "ota_status": format!("installing_v{}", target_version) }),
             )
             .await;
 
@@ -297,23 +337,23 @@ async fn handle_twin_patch(patch_str: &str, client: &AsyncClient) {
                 update_reported_status(
                     client,
                     json!({
-                        "ota_status": format!("installed_v{}_rebooting", version),
-                        "pending_version": version
+                        "ota_status": format!("installed_v{}_rebooting", target_version),
+                        "pending_version": target_version
                     }),
                 )
                 .await;
 
-                cleanup_temp_files();
+                cleanup_temp_files().await;
                 println!("[ota] Installation completed. Rebooting device in 5 seconds...");
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 let _ = Command::new("reboot").spawn();
             } else {
                 update_reported_status(
                     client,
-                    json!({ "ota_status": format!("failed_v{}", version) }),
+                    json!({ "ota_status": format!("failed_v{}", target_version) }),
                 )
                 .await;
-                cleanup_temp_files();
+                cleanup_temp_files().await;
             }
         }
     }
@@ -321,7 +361,6 @@ async fn handle_twin_patch(patch_str: &str, client: &AsyncClient) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Install ring-backed rustls crypto provider
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| anyhow!("Failed to install crypto provider"))?;
@@ -337,23 +376,6 @@ async fn main() -> Result<()> {
     let config = parse_connection_string()?;
     println!("[init] Configured Device ID: {}", config.device_id);
 
-    // Generate SAS token valid for 1 year
-    let sas_token = generate_sas_token(&config, 3600 * 24 * 365)?;
-
-    let mut mqttoptions = MqttOptions::new(&config.device_id, &config.host_name, 8883);
-    mqttoptions.set_keep_alive(Duration::from_secs(30));
-    mqttoptions.set_clean_session(false);
-    mqttoptions.set_transport(Transport::tls_with_default_config());
-
-    let username = format!(
-        "{}/{}/?api-version=2021-04-12",
-        config.host_name, config.device_id
-    );
-    mqttoptions.set_credentials(username, sas_token);
-
-    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 50);
-    let client = Arc::new(client);
-
     let init_status = json!({
         "hardware_id": device_id,
         "installed_version": fw_version,
@@ -363,50 +385,82 @@ async fn main() -> Result<()> {
 
     let is_busy = Arc::new(Mutex::new(false));
 
-    loop {
-        match eventloop.poll().await {
-            Ok(event) => match event {
-                rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_)) => {
-                    println!("[mqtt] Connected to Azure IoT Hub (TLS session established)");
+    // Standard short-lived SAS token TTL (1 hour)
+    const SAS_TOKEN_TTL_SECS: i64 = 3600;
 
-                    let client_sub = Arc::clone(&client);
-                    tokio::spawn(async move {
-                        let _ = client_sub
-                            .subscribe("$iothub/twin/PATCH/properties/desired/#", QoS::AtLeastOnce)
-                            .await;
-                        let _ = client_sub
-                            .subscribe("$iothub/twin/res/#", QoS::AtLeastOnce)
-                            .await;
-                    });
+    'reconnect: loop {
+        let sas_token = match generate_sas_token(&config, SAS_TOKEN_TTL_SECS) {
+            Ok(token) => token,
+            Err(e) => {
+                eprintln!("[auth] Failed to generate SAS token: {}. Retrying...", e);
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue 'reconnect;
+            }
+        };
 
-                    update_reported_status(&client, init_status.clone()).await;
-                }
-                rumqttc::Event::Incoming(rumqttc::Packet::Publish(p)) => {
-                    if p.topic.starts_with("$iothub/twin/PATCH/properties/desired") {
-                        if let Ok(payload_str) = String::from_utf8(p.payload.to_vec()) {
-                            let busy_lock = Arc::clone(&is_busy);
-                            let client_ref = Arc::clone(&client);
+        let mut mqttoptions = MqttOptions::new(&config.device_id, &config.host_name, 8883);
+        mqttoptions.set_keep_alive(Duration::from_secs(30));
+        mqttoptions.set_clean_session(false);
+        mqttoptions.set_transport(Transport::tls_with_default_config());
 
-                            tokio::spawn(async move {
-                                let mut busy = busy_lock.lock().await;
-                                if *busy {
-                                    eprintln!(
-                                        "[warn] Another OTA task is already in progress, skipping"
-                                    );
-                                    return;
-                                }
-                                *busy = true;
-                                handle_twin_patch(&payload_str, &client_ref).await;
-                                *busy = false;
-                            });
+        let username = format!(
+            "{}/{}/?api-version=2021-04-12",
+            config.host_name, config.device_id
+        );
+        mqttoptions.set_credentials(username, sas_token);
+
+        let (client, mut eventloop) = AsyncClient::new(mqttoptions, 50);
+        let client = Arc::new(client);
+
+        loop {
+            match eventloop.poll().await {
+                Ok(event) => match event {
+                    rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_)) => {
+                        println!("[mqtt] Connected to Azure IoT Hub (TLS session established)");
+
+                        let client_sub = Arc::clone(&client);
+                        tokio::spawn(async move {
+                            let _ = client_sub
+                                .subscribe(
+                                    "$iothub/twin/PATCH/properties/desired/#",
+                                    QoS::AtLeastOnce,
+                                )
+                                .await;
+                        });
+
+                        update_reported_status(&client, init_status.clone()).await;
+                    }
+                    rumqttc::Event::Incoming(rumqttc::Packet::Publish(p)) => {
+                        if p.topic.starts_with("$iothub/twin/PATCH/properties/desired") {
+                            if let Ok(payload_str) = String::from_utf8(p.payload.to_vec()) {
+                                let busy_lock = Arc::clone(&is_busy);
+                                let client_ref = Arc::clone(&client);
+
+                                tokio::spawn(async move {
+                                    let mut busy = busy_lock.lock().await;
+                                    if *busy {
+                                        eprintln!(
+                                            "[warn] Another OTA task is already in progress, skipping"
+                                        );
+                                        return;
+                                    }
+                                    *busy = true;
+                                    handle_twin_patch(&payload_str, &client_ref).await;
+                                    *busy = false;
+                                });
+                            }
                         }
                     }
+                    _ => {}
+                },
+                Err(e) => {
+                    eprintln!(
+                        "[mqtt] Connection dropped: {}. Reconnecting with refreshed SAS token...",
+                        e
+                    );
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    break;
                 }
-                _ => {}
-            },
-            Err(e) => {
-                eprintln!("[mqtt] Connection error: {}. Retrying in 3 seconds...", e);
-                tokio::time::sleep(Duration::from_secs(3)).await;
             }
         }
     }
