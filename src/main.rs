@@ -200,7 +200,7 @@ fn decrypt_bundle_if_needed(src: &str, dst: &str) -> Result<String> {
         }
 
         let cmd = format!(
-            "openssl enc -d -aes-256-cbc -salt -in '{}' -out '{}' -pass file:'{}'",
+            "openssl enc -d -aes-256-cbc -salt -pbkdf2 -iter 100000 -in '{}' -out '{}' -pass file:'{}'",
             src, dst, CRYPT_KEY_FILE
         );
         let (ok, _, err) = run_cmd(&cmd);
