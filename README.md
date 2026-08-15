@@ -59,12 +59,19 @@ cp .env.example .env
 | Variable          | Description                                     | Default Target Path                |
 | ----------------- | ----------------------------------------------- | ---------------------------------- |
 | `CONF_FILE`       | Azure IoT Hub connection string file            | `/etc/rauc/azure.conf`             |
-| `DOWNLOAD_PATH`   | Staging location for downloaded bundles         | `/userdata/update.encrypted.raucb` |
+| `DOWNLOAD_PATH`   | Staging location for downloaded bundles         | `/userdata/update.download`        |
 | `DECRYPTED_PATH`  | Target output for decrypted bundle              | `/userdata/update.raucb`           |
 | `CRYPT_KEY_FILE`  | Key file used for AES-256-CBC bundle decryption | `/etc/rauc/encryption.key`         |
 | `FW_VERSION_FILE` | System version definition file                  | `/etc/firmware-version`            |
 
 > Note: The .env file is only needed during compilation. It is not required on the target device filesystem.
+
+### Bundle Encryption Example
+If you use encrypted bundles, encrypt them on your build machine using:
+
+```bash
+openssl enc -aes-256-cbc -salt -pbkdf2 -iter 100000 -in update.raucb -out update.encrypted.raucb -pass file:encryption.key
+```
 
 ## Device Twin Payload Format
 
@@ -146,3 +153,11 @@ WantedBy=multi-user.target
 systemctl daemon-reload
 systemctl enable --now azure-ota-agent
 ```
+
+## Target Runtime Requirements
+
+The daemon executes host CLI binaries directly. Ensure the following utilities are available in the target device's `$PATH`:
+
+* `rauc`: Required to perform slot validation and bundle installation.
+* `openssl`: Required for runtime bundle decryption (if encrypted bundles are used).
+* `reboot`: Required to initiate the automatic restart sequence post-installation.
