@@ -169,22 +169,38 @@ fn get_firmware_version() -> String {
         let is_system1 = std::fs::read_to_string("/proc/cmdline")
             .map(|c| c.contains("system1") || c.contains("mmcblk0p7"))
             .unwrap_or(false);
-        let target_section = if is_system1 { "[rootfs.1]" } else { "[rootfs.0]" };
+        let slot_num = if is_system1 { "1" } else { "0" };
+        let target_short = format!("[rootfs.{}]", slot_num);
+        let target_long = format!("[slot.rootfs.{}]", slot_num);
+        let target_boot = format!("[slot.boot.{}]", slot_num);
         let mut in_section = false;
+        let mut in_boot_section = false;
+        let mut rootfs_version = None;
+        let mut boot_version = None;
+
         for line in content.lines() {
             let l = line.trim();
             if l.starts_with('[') && l.ends_with(']') {
-                in_section = l == target_section;
+                in_section = l == target_short || l == target_long;
+                in_boot_section = l == target_boot;
                 continue;
             }
-            if in_section && l.starts_with("bundle.version=") {
+            if (in_section || in_boot_section) && l.starts_with("bundle.version=") {
                 if let Some(ver) = l.split('=').nth(1) {
                     let trimmed = ver.trim().trim_matches('"');
                     if !trimmed.is_empty() {
-                        return trimmed.to_string();
+                        if in_section {
+                            rootfs_version = Some(trimmed.to_string());
+                        } else if in_boot_section {
+                            boot_version = Some(trimmed.to_string());
+                        }
                     }
                 }
             }
+        }
+
+        if let Some(v) = rootfs_version.or(boot_version) {
+            return v;
         }
     }
 
@@ -207,7 +223,7 @@ fn get_firmware_version() -> String {
     if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
         for line in content.lines() {
             let line_trimmed = line.trim();
-            if line_trimmed.starts_with("STNVR_VERSION=") || line_trimmed.starts_with("VERSION_ID=") {
+            if line_trimmed.starts_with("STNVR_VERSION=") {
                 let parts: Vec<&str> = line_trimmed.split('=').collect();
                 if parts.len() > 1 {
                     let ver = parts[1].trim_matches('"').trim();
@@ -453,7 +469,21 @@ async fn update_reported_status(client: &AsyncClient, patch: Value) {
     if let Some(patch_obj) = patch.as_object() {
         if let Some(merged_obj) = merged.as_object_mut() {
             for (k, v) in patch_obj {
-                merged_obj.insert(k.clone(), v.clone());
+                if v.is_null() {
+                    merged_obj.remove(k);
+                } else {
+                    merged_obj.insert(k.clone(), v.clone());
+                }
+            }
+            if patch_obj.get("ota_status").and_then(|s| s.as_str()) == Some("idle") {
+                merged_obj.remove("available_version");
+                merged_obj.remove("pending_version");
+                merged_obj.remove("download_url");
+                merged_obj.remove("description");
+                merged_obj.remove("highlights");
+                merged_obj.remove("download_progress_percent");
+                merged_obj.remove("downloaded_bytes");
+                merged_obj.remove("total_bytes");
             }
         }
     }
@@ -493,6 +523,7 @@ async fn handle_twin_patch(patch_str: &str, client: Arc<AsyncClient>) {
                     "[ota] Device already at or newer than desired version (current: v{}, target: v{}). Skipping update.",
                     current_version, target_version
                 );
+                let _ = fs::remove_file(PENDING_UPDATE_PATH).await;
                 update_reported_status(
                     &client,
                     json!({
